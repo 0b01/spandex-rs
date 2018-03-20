@@ -31,12 +31,12 @@ impl<T> Var<T> {
     }
 }
 
-struct Node {
-    kind: Box<Kind>,
+struct Node<'a> {
+    kind: Box<Kind + 'a>,
 }
 
-impl Node {
-    fn new(kind: Box<Kind>) -> Self {
+impl<'a> Node<'a> {
+    fn new(kind: Box<Kind + 'a>) -> Self {
         Node {
             kind
         }
@@ -44,14 +44,14 @@ impl Node {
 }
 
 /// Incremental
-struct Incr {
-    graph: Dag<Node, u32, usize>,
+struct Incr<'a> {
+    graph: Dag<Node<'a>, u32, usize>,
     node_id_counter: Id,
     stabilization_num_counter: Id,
     stabilization_num: usize,
 }
 
-impl Incr {
+impl<'a> Incr<'a> {
     fn new() -> Self {
         Incr {
             graph: Dag::new(),
@@ -60,10 +60,10 @@ impl Incr {
             stabilization_num: 0,
         }
     }
-    fn var<T: 'static>(&mut self, value: T) -> Node {
+    fn var<T: 'a>(&self, value: T) -> Node {
         Node::new(
             Box::new(Var::new(value,
-            self.stabilization_num))
+                              self.stabilization_num))
         )
     }
 }
