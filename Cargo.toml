@@ -1,0 +1,7 @@
+[package]
+name = "spandex"
+version = "0.1.0"
+authors = ["Ricky Han <rickylqhan@gmail.com>"]
+
+[dependencies]
+daggy = "*"
