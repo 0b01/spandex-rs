@@ -1,67 +1,86 @@
 #![feature(conservative_impl_trait)]
-extern crate daggy;
-use daggy::Dag;
-use daggy::NodeIndex;
-use std::rc::Rc;
-use std::cell::RefCell;
+extern crate petgraph;
+use petgraph::algo::{Cycle, toposort};
+use petgraph::graph::Graph;
+use petgraph::graph::NodeIndex;
+
+use std::marker::PhantomData;
+use std::fmt::{Debug, Formatter, self};
 
 /// Kind
-trait Kind {
+trait Kind: Debug {
 }
 
 /// Variable Kind
 struct Var<T> {
     value: T,
-    set_at: usize,
 }
 impl<'a, T> Kind for Var<T> {
 }
 impl<T> Var<T> {
-    fn new(value: T, set_at: usize) -> Self {
+    fn new(value: T) -> Self {
         Var {
             value,
-            set_at,
         }
     }
 }
-
-struct Map2<A1, A2, F> {
-    a1: A1,
-    a2: A2,
-    f: F
+impl<T> Debug for Var<T> {
+    fn fmt(&self, fmt: &mut Formatter) -> Result<(), fmt::Error> {
+        write!(fmt, "Var")
+    }
 }
-impl<A1, A2, F> Kind for Map2<A1, A2, F> {}
-impl<A1, A2, F> Map2<A1, A2, F> {
-    fn new(a1: A1, a2: A2, f: F) -> Self {
+
+struct Map2<A1, A2, R, F: Fn(A1, A2)->R> 
+{
+    a1: Incr<A1>,
+    a2: Incr<A2>,
+    f: Box<F>
+}
+impl<A1, A2, R, F:Fn(A1, A2)->R> Kind for Map2<A1, A2, R, F> 
+{
+
+}
+impl<A1, A2, R, F:Fn(A1, A2)->R> Map2<A1, A2, R, F> 
+{
+    fn new(a1: Incr<A1>, a2: Incr<A2>, f: Box<F>) -> Self {
         Self { a1, a2, f }
+    }
+}
+impl<A1, A2, R, F:Fn(A1,A2)->R> Debug for Map2<A1, A2, R, F> {
+    fn fmt(&self, fmt: &mut Formatter) -> Result<(), fmt::Error> {
+        write!(fmt, "Map2")
     }
 }
 
 //--------------------------------------------------------
 
 /// Node
+#[derive(Debug)]
 struct Node<'a> {
     kind: Box<Kind + 'a>,
-    height: i32,
+    pub stabilization_num: usize,
+    id: usize,
 }
-
 impl<'a> Node<'a> {
-    fn new(kind: Box<Kind + 'a>) -> Self {
+    fn new(kind: Box<Kind + 'a>, id: usize) -> Self {
         Node {
             kind,
-            height: -1,
+            stabilization_num: 0,
+            id,
         }
     }
 }
 
-struct Incr {
-    pub idx: NodeIndex<usize>,
+#[derive(Debug)]
+struct Incr<T> {
+    pub idx: NodeIndex<u32>,
+    _type: PhantomData<T>,
 }
-
-impl Incr {
-    fn new(idx: NodeIndex<usize>) -> Self {
+impl<T> Incr<T> {
+    fn new(idx: NodeIndex<u32>) -> Self {
         Incr {
             idx,
+            _type: PhantomData,
         }
     }
 }
@@ -70,9 +89,8 @@ struct Id {id: usize}
 impl Iterator for Id {
     type Item = usize;
     fn next(&mut self) -> Option<usize> {
-        let ret = self.id;
         self.id += 1;
-        Some(ret)
+        Some(self.id)
     }
 }
 impl Id {
@@ -80,42 +98,70 @@ impl Id {
     fn none()->usize{0}
 }
 
-
 /// Incremental
 struct Incremental<'a> {
-    graph: Dag<Node<'a>, u32, usize>,
+    graph: Graph<Node<'a>, u32>,
     node_id_counter: Id,
     stabilization_num_counter: Id,
-    stabilization_num: usize,
 }
-
 impl<'a> Incremental<'a> {
     fn new() -> Self {
         Incremental {
-            graph: Dag::new(),
+            graph: Graph::new(),
             node_id_counter: Id::new(),
             stabilization_num_counter: Id::new(),
-            stabilization_num: 0,
         }
     }
-    fn var<T: 'a>(&mut self, value: T) -> Node<'a> {
-        let node = Node::new(Box::new(Var::new(value, self.stabilization_num)));
+    fn var<T: 'a>(&mut self, value: T) -> Incr<T> {
+        let kind = Box::new(Var::new(value));
+        let id = self.node_id_counter.next().unwrap();
+        let node = Node::new(kind, id);
         let idx = self.graph.add_node(node);
-        self.graph[idx]
+        Incr::new(idx)
     }
-    fn map2<F:'a, A1, A2, R>(&mut self, a: Node<'a>, b: Node<'a>, f: F) -> Node<'a>
-        where F: Fn(A1, A2) -> R
+    fn map2<A1:'a,A2:'a,R:'a,F:'a+Fn(A1,A2)->R>(&mut self, a: Incr<A1>, b: Incr<A2>, f:Box<F>) -> Incr<R>
     {
-        let node = Node::new(Box::new(Map2::new(a, b, f)));
+        let a_idx = a.idx;
+        let b_idx = b.idx;
+
+        let kind = Box::new(Map2::new(a, b, f));
+        let id = self.node_id_counter.next().unwrap();
+        let node = Node::new(kind, id);
         let idx = self.graph.add_node(node);
-        self.graph[idx]
+
+        self.graph.add_edge(a_idx, idx, 1);
+        self.graph.add_edge(b_idx, idx, 1);
+        Incr::new(idx)
+    }
+    fn stabilize(&mut self) -> Result<(), Cycle<NodeIndex>> {
+        let current_stabilization_num = self.stabilization_num_counter.next().unwrap();
+        let nodes_idx = toposort(&self.graph, None)?;
+        let nodes = nodes_idx.iter()
+            .map(|&idx| &self.graph[idx])
+            .map(|node| {println!("{:?}, {}", node, current_stabilization_num); node })
+            .filter(|node| node.stabilization_num < current_stabilization_num)
+            .collect::<Vec<&Node>>();
+        println!("{:?}", nodes);
+        Ok(())
     }
 }
 
-fn test() {
+fn test_run() {
     let mut incr = Incremental::new();
     let a = incr.var(3);
     let b = incr.var(5);
-    let c = incr.map2(a, b, |a:i32,b:i32| a + b);
+    let c = incr.map2(a, b, Box::new(|a:i32,b:i32| {a + b}));
+    let n = incr.var(1);
+    let d = incr.map2(n, c, Box::new(|a:i32,b:i32| {a + b}));
+    incr.stabilize();
     
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_misc() {
+        test_run();
+    }
 }
