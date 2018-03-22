@@ -18,95 +18,100 @@ use std::any::Any;
 trait Kind: Debug {
     type Item;
     fn recompute(&mut self, incr: &Incremental);
-    fn observe(&self, incr: &Incremental) -> &Self::Item;
+    fn observe(&self, incr: &Incremental) -> Self::Item;
 }
 
-trait AsKind<T> {
-    fn as_kind(&self) -> &Kind<Item=Option<T>>;
-}
+// trait AsKind<T> {
+//     fn as_kind(&self) -> &Kind<Item=Option<T>>;
+// }
 
-impl<T> AsKind<T> for Var<T> {
-    fn as_kind(&self) -> &Kind<Item=Option<T>> {
-        self
-    }
-}
+// impl<T> AsKind<T> for Var<T> {
+//     fn as_kind(&self) -> &Kind<Item=Option<T>> {
+//         self
+//     }
+// }
 
-impl<A1,A2,R,T> AsKind<R> for Map2<A1,A2,R,T>
-    where for<'r, 's> T: Fn(&'r A1, &'s A2) -> R
-{
-    fn as_kind(&self) -> &Kind<Item=Option<R>> {
-        self
-    }
-}
+// impl<A1,A2,R,T> AsKind<R> for Map2<A1,A2,R,T>
+//     where T: Fn(A1, A2) -> R
+// {
+//     fn as_kind(&self) -> &Kind<Item=Option<R>> {
+//         self
+//     }
+// }
 
 /// Variable Kind
-struct Var<T> {
+struct Var<T>
+    where T: 'static + Clone
+{
     value: T,
 }
-impl<T> Kind for Var<T> {
+impl<T: Clone> Kind for Var<T> {
     type Item = Option<T>;
     fn recompute(&mut self, _incr: &Incremental) {}
-    fn observe(&self, _incr: &Incremental) -> &Self::Item {
-        &Some(self.value)
+    fn observe(&self, _incr: &Incremental) -> Self::Item {
+        Some(self.value.clone())
     }
 }
 
-impl<T> Var<T> {
+impl<T: Clone> Var<T> {
     fn new(value: T) -> Self {
         Var {
-            value,
+            value: value,
         }
     }
 }
-impl<T> Debug for Var<T> {
+impl<T: Clone> Debug for Var<T> {
     fn fmt(&self, fmt: &mut Formatter) -> Result<(), fmt::Error> {
         write!(fmt, "Var")
     }
 }
 
-struct Map2<A1, A2, R, F> 
-    where A1: 'static ,
-          A2: 'static ,
-          R: 'static ,
-          F: 'static + Fn(&A1, &A2)->R,
+struct Map2<'a, A1, A2, R, F> 
+    where A1: 'static,
+          A2: 'static,
+          R: 'static + Clone,
+          F: 'static + Fn(A1, A2)->R,
 {
-    a1: Box<Kind<Item=A1>>,
-    a2: Box<Kind<Item=A2>>,
+    a1: Box<Incr<Item=A1>>,
+    a2: Box<Incr<Item=A2>>,
     f: Box<F>,
     r: Option<R>,
+    lifetime: PhantomData<&'a F>,
 }
-impl<A1, A2, R, F> Kind for Map2<A1, A2, R, F> 
-    where A1: 'static ,
-        A2: 'static ,
-        R: 'static ,
-        F: 'static + Fn(&A1, &A2)->R,
+impl<'a, A1, A2, R, F> Kind for Map2<'a, A1, A2, R, F> 
+    where A1: 'static,
+        A2: 'static,
+        R: 'static + Clone,
+        F: 'static + Fn(A1, A2)->R,
 {
     type Item = Option<R>;
     fn recompute(&mut self, incr: &Incremental) {
-        let a = self.a1.observe(incr);
-        let b = self.a2.observe(incr);
+        let a1 = self.a1.clone();
+        let a2 = self.a2.clone();
+        let a = incr.observe(a1).unwrap();
+        let b = incr.observe(a2).unwrap();
         self.r = Some((self.f)(a, b))
     }
-    fn observe(&self, _incr: &Incremental) -> &Self::Item {
-        &self.r
+    fn observe(&self, _incr: &Incremental) -> Self::Item {
+        self.r.clone()
     }
 }
-impl<A1, A2, R, F> Map2<A1, A2, R, F> 
+impl<'a, A1, A2, R, F> Map2<'a, A1, A2, R, F> 
     where A1: 'static,
           A2: 'static,
-          R: 'static,
-          F: 'static + Fn(&A1, &A2)->R,
+          R: 'static + Clone,
+          F: 'static + Fn(A1, A2)->R,
 {
-    fn new(a1: Box<Kind<Item=A1>>, a2: Box<Kind<Item=A2>>, f: F) -> Self {
+    fn new(a1: Box<Incr<Item=A1>>, a2: Box<Incr<Item=A2>>, f: F) -> Self {
         let r = None;
-        Self { a1: a1, a2: a2, f: box f, r }
+        Self { a1: a1, a2: a2, f: box f, r , lifetime: PhantomData }
     }
 }
-impl<A1, A2, R, F> Debug for Map2<A1, A2, R, F>
-    where A1: 'static ,
-          A2: 'static ,
-          R: 'static ,
-          F: 'static + Fn(&A1, &A2)->R,
+impl<'a, A1, A2, R, F> Debug for Map2<'a, A1, A2, R, F>
+    where A1: 'static,
+          A2: 'static,
+          R: 'static + Clone,
+          F: 'static + Fn(A1, A2)->R,
 {
     fn fmt(&self, fmt: &mut Formatter) -> Result<(), fmt::Error> {
         write!(fmt, "Map2")
@@ -136,6 +141,13 @@ impl Node {
 trait Incr {
     type Item;
     fn idx(&self) -> NodeIndex<u32>;
+    fn extract<'a>(&self, data: &'a Node, incr: &Incremental) -> Option<Self::Item>;
+}
+
+impl<T> Clone for Box<Incr<Item=T>> {
+    fn clone(&self) -> Self {
+        self.clone()
+    }
 }
 
 impl<T> Incr for Box<Incr<Item=T>> {
@@ -143,9 +155,41 @@ impl<T> Incr for Box<Incr<Item=T>> {
     fn idx(&self) -> NodeIndex<u32> {
         self.idx()
     }
+    fn extract<'a>(&self, data: &'a Node, incr: &Incremental) -> Option<Self::Item> {
+        self.extract(data, incr)
+    }
 }
 
-#[derive(Debug)]
+
+#[derive(Debug, Clone)]
+struct IncrVar<T> {
+    pub idx: NodeIndex<u32>,
+    _type: PhantomData<T>,
+}
+impl<T> IncrVar<T> {
+    fn new(idx: NodeIndex<u32>) -> Self {
+        IncrVar {
+            idx,
+            _type: PhantomData,
+        }
+    }
+}
+impl<T> Incr for IncrVar<T>
+    where T: 'static + Clone
+{
+    type Item = T;
+    fn idx(&self) -> NodeIndex<u32> {
+        self.idx
+    }
+    fn extract<'a, 'b>(&self, data: &'a Node, incr: &Incremental) -> Option<Self::Item> {
+        if let Some(var) = data.kind.downcast_ref::<Var<T>>() {
+            return var.observe(incr);
+        }
+        None
+    }
+}
+
+#[derive(Debug, Clone)]
 struct IncrMap2<A1,A2,R,F> {
     pub idx: NodeIndex<u32>,
     _arg1type: PhantomData<A1>,
@@ -164,33 +208,25 @@ impl<A1,A2,R,F> IncrMap2<A1,A2,R,F> {
         }
     }
 }
-impl<A1,A2,R,F> Incr for IncrMap2<A1,A2,R,F> {
+impl<A1,A2,R,F> Incr for IncrMap2<A1,A2,R,F>
+    where A1: 'static,
+          A2: 'static,
+          R: 'static + Clone,
+          F: 'static + Fn(A1, A2)->R,
+{
     type Item=R;
     fn idx(&self) -> NodeIndex<u32> {
         self.idx
     }
-}
 
-#[derive(Debug)]
-struct IncrVar<T> {
-    pub idx: NodeIndex<u32>,
-    _type: PhantomData<T>,
-}
-impl<T> IncrVar<T> {
-    fn new(idx: NodeIndex<u32>) -> Self {
-        IncrVar {
-            idx,
-            _type: PhantomData,
-        }
+    fn extract<'a>(&self, data: &'a Node, incr: &Incremental) -> Option<Self::Item> {
+        if let Some(map2) = data.kind.downcast_ref::<Map2<A1,A2,R,F>>() {
+            return map2.observe(incr)
+        } 
+        None
     }
+        
 }
-impl<T> Incr for IncrVar<T> {
-    type Item = T;
-    fn idx(&self) -> NodeIndex<u32> {
-        self.idx
-    }
-}
-
 struct Id {id: usize}
 impl Iterator for Id {
     type Item = usize;
@@ -219,25 +255,23 @@ impl Incremental {
             stabilization_num_counter: Id::new(),
         }
     }
-    fn var<T:'static >(&mut self, value: T) -> IncrVar<T> {
-        let kind = Box::new(Var::new(Box::new(value) as Box<Any>));
+    fn var<T:'static + Clone>(&mut self, value: T) -> IncrVar<T> {
+        let kind = Box::new(Var::new(value));
         let id = self.node_id_counter.next().unwrap();
         let node = Node::new(kind, id);
         let idx = self.graph.add_node(node);
         IncrVar::new(idx)
     }
     fn map2<A1, A2, R, F>(&mut self, a: impl Incr<Item=A1> + 'static, b: impl Incr<Item=A2> + 'static, f:F) -> IncrMap2<A1,A2,R,F>
-        where A1: 'static ,
-            A2: 'static ,
-            R: 'static,
-            F: 'static + Fn(&A1, &A2)->R,
+        where A1: 'static,
+            A2: 'static,
+            R: 'static + Clone,
+            F: 'static + Fn(A1, A2)->R,
     {
         let a_idx = a.idx();
         let b_idx = b.idx();
-        let a = self.graph[a_idx].kind;
-        let b = self.graph[b_idx].kind;
 
-        let kind = Box::new(Map2::new(a, b, f));
+        let kind = Box::new(Map2::new(box a, box b, f));
         let id = self.node_id_counter.next().unwrap();
         let node = Node::new(kind, id);
         let idx = self.graph.add_node(node);
@@ -251,32 +285,23 @@ impl Incremental {
         let current_stabilization_num = self.stabilization_num_counter.next().unwrap();
         let nodes_idx = toposort(&self.graph, None)?;
         let to_recompute = nodes_idx.iter()
-            .map(|&idx| &self.graph[idx])
-            .filter(|node| node.stabilization_num < current_stabilization_num)
+            .filter_map(|&idx| {
+                let node = &self.graph[idx];
+                if node.stabilization_num < current_stabilization_num {
+                    Some(node)
+                } else {
+                    None
+                }
+            })
             .collect::<Vec<&Node>>();
-        println!("{:?}", to_recompute);
+        to_recompute.iter().map(|node| node.kind.recompute());
         Ok(())
     }
 
-    fn observe<A1,A2,R,F>(&self, incr: &'static impl Incr ) -> Result<&Option<R>, ()>
-        where A1: 'static ,
-            A2: 'static ,
-            R: 'static ,
-            F: 'static + Fn(&A1, &A2)->R,
+    fn observe<'a, R: 'static>(&self, incr: impl Incr<Item=R> + 'a ) -> Option<R>
     {
         let node = &self.graph[incr.idx()];
-        if let Some(var) = node.kind.downcast_ref::<Var<R>>() {
-            return Ok(var.observe(&self));
-        }
-
-        if let Some(fun) = (incr as &Any).downcast_ref::<IncrMap2<A1,A2,R,F>>() {
-            if let Some(map2) = node.kind.downcast_ref::<Map2<A1,A2,R,F>>() {
-                return Ok(map2.observe(&self))
-            } 
-        }
-
-        Err(())
-        
+        incr.extract(node, self)
     }
 }
 
@@ -284,12 +309,12 @@ fn test_run() {
     let mut incr = Incremental::new();
     let a = incr.var(3);
     let b = incr.var(5);
-    let c = incr.map2(a, b, |a:&i32,b:&i32| {a + b});
+    let c = incr.map2(a, b, |a:i32,b:i32| {a + b});
     let n = incr.var(1);
-    let d = incr.map2(n, c, |a:&i32,b:&i32| {a + b});
+    let d = incr.map2(n, c, |a:i32,b:i32| {a + b});
 
     assert!(incr.stabilize().is_ok());
-    // assert_eq!(incr.observe(&c).unwrap(), 5);
+    assert_eq!(incr.observe(d), Some(5));
 
 }
 
